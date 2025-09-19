@@ -47,6 +47,8 @@ def create_protobuf_message(user_id, region):
         message = like_pb2.like()
         message.uid = int(user_id)
         message.region = region
+        if hasattr(message, 'ob_version'):
+            message.ob_version = "OB50"
         return message.SerializeToString()
     except Exception as e:
         app.logger.error(f"Error creating protobuf message: {e}")
@@ -69,8 +71,9 @@ async def send_request(encrypted_uid, token, url):
         async with aiohttp.ClientSession() as session:
             async with session.post(url, data=edata, headers=headers) as response:
                 if response.status != 200:
-                    app.logger.error(f"Request failed with status code: {response.status}")
-                    return response.status
+                    text = await response.text()
+                    app.logger.error(f"Request failed with status code: {response.status} and response: {text}")
+                    return None
                 return await response.text()
     except Exception as e:
         app.logger.error(f"Exception in send_request: {e}")
@@ -106,6 +109,9 @@ def create_protobuf(uid):
         message = uid_generator_pb2.uid_generator()
         message.saturn_ = int(uid)
         message.garena = 1
+ 
+        if hasattr(message, 'ob_version'):
+            message.ob_version = "OB50"
         return message.SerializeToString()
     except Exception as e:
         app.logger.error(f"Error creating uid protobuf: {e}")
@@ -121,11 +127,11 @@ def enc(uid):
 def make_request(encrypt, server_name, token):
     try:
         if server_name == "IND":
-            url = "https://client.ind.freefiremobile.com/GetPlayerPersonalShow"
+            url = "https://proxy-9gtv.onrender.com/GetPlayerPersonalShow"
         elif server_name in {"BR", "US", "SAC", "NA"}:
-            url = "https://client.us.freefiremobile.com/GetPlayerPersonalShow"
+            url = "https://proxy-9gtv.onrender.com/GetPlayerPersonalShow"
         else:
-            url = "https://clientbp.ggblueshark.com/GetPlayerPersonalShow"
+            url = "https://proxy-9gtv.onrender.com/GetPlayerPersonalShow"
         edata = bytes.fromhex(encrypt)
         headers = {
             'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
@@ -139,8 +145,10 @@ def make_request(encrypt, server_name, token):
             'ReleaseVersion': "OB50"
         }
         response = requests.post(url, data=edata, headers=headers, verify=False)
-        hex_data = response.content.hex()
-        binary = bytes.fromhex(hex_data)
+        if response.status_code != 200:
+            app.logger.error(f"Request failed with status code: {response.status_code} and response: {response.text}")
+            return None
+        binary = response.content
         decode = decode_protobuf(binary)
         if decode is None:
             app.logger.error("Protobuf decoding returned None.")
@@ -161,25 +169,6 @@ def decode_protobuf(binary):
         app.logger.error(f"Unexpected error during protobuf decoding: {e}")
         return None
 
-def fetch_player_info(uid):
-    try:
-        url = f"https://nr-codex-info.vercel.app/get?uid={uid}"
-        response = requests.get(url, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            account_info = data.get("AccountInfo", {})
-            return {
-                "Level": account_info.get("AccountLevel", "NA"),
-                "Region": account_info.get("AccountRegion", "NA"),
-                "ReleaseVersion": account_info.get("ReleaseVersion", "NA")
-            }
-        else:
-            app.logger.error(f"Player info API failed with status code: {response.status_code}")
-            return {"Level": "NA", "Region": "NA", "ReleaseVersion": "NA"}
-    except Exception as e:
-        app.logger.error(f"Error fetching player info from API: {e}")
-        return {"Level": "NA", "Region": "NA", "ReleaseVersion": "NA"}
-
 @app.route('/like', methods=['GET'])
 def handle_requests():
     uid = request.args.get("uid")
@@ -189,20 +178,7 @@ def handle_requests():
 
     try:
         def process_request():
-            # Fetch player info from the new API
-            player_info = fetch_player_info(uid)
-            region = player_info["Region"]
-            level = player_info["Level"]
-            release_version = player_info["ReleaseVersion"]
-
-            # Validate server_name against region from API
-            if region != "NA" and server_name != region:
-                app.logger.warning(f"Server name {server_name} does not match API region {region}. Using API region.")
-                server_name_used = region
-            else:
-                server_name_used = server_name
-
-            tokens = load_tokens(server_name_used)
+            tokens = load_tokens(server_name)
             if tokens is None:
                 raise Exception("Failed to load tokens.")
             token = tokens[0]['token']
@@ -210,7 +186,7 @@ def handle_requests():
             if encrypted_uid is None:
                 raise Exception("Encryption of UID failed.")
 
-            before = make_request(encrypted_uid, server_name_used, token)
+            before = make_request(encrypted_uid, server_name, token)
             if before is None:
                 raise Exception("Failed to retrieve initial player info.")
             try:
@@ -225,16 +201,16 @@ def handle_requests():
                 before_like = 0
             app.logger.info(f"Likes before command: {before_like}")
 
-            if server_name_used == "IND":
-                url = "https://client.ind.freefiremobile.com/LikeProfile"
-            elif server_name_used in {"BR", "US", "SAC", "NA"}:
-                url = "https://client.us.freefiremobile.com/LikeProfile"
+            if server_name == "IND":
+                url = "https://proxy-9gtv.onrender.com/LikeProfile"
+            elif server_name in {"BR", "US", "SAC", "NA"}:
+                url = "https://proxy-9gtv.onrender.com/LikeProfile"
             else:
-                url = "https://clientbp.ggblueshark.com/LikeProfile"
+                url = "https://proxy-9gtv.onrender.com/LikeProfile"
 
-            asyncio.run(send_multiple_requests(uid, server_name_used, url))
+            asyncio.run(send_multiple_requests(uid, server_name, url))
 
-            after = make_request(encrypted_uid, server_name_used, token)
+            after = make_request(encrypted_uid, server_name, token)
             if after is None:
                 raise Exception("Failed to retrieve player info after like requests.")
             try:
@@ -252,10 +228,7 @@ def handle_requests():
                 "LikesafterCommand": after_like,
                 "LikesbeforeCommand": before_like,
                 "PlayerNickname": player_name,
-                "Region": region,
-                "Level": level,
                 "UID": player_uid,
-                "ReleaseVersion": release_version,
                 "status": status
             }
             return result
